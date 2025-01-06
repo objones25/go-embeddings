@@ -61,7 +61,7 @@ func getProjectRoot() (string, error) {
 	}
 
 	// If we're in a test directory, go up to the project root
-	if strings.Contains(cwd, "test/unit") || strings.Contains(cwd, "test/integration") {
+	if strings.Contains(cwd, "test/unit") || strings.Contains(cwd, "test/integration") || strings.Contains(cwd, "test/benchmark") {
 		return filepath.Join(cwd, "../.."), nil
 	}
 
@@ -80,11 +80,21 @@ func initializeONNXRuntime() error {
 
 		// Set library path based on platform
 		libPath := filepath.Join(projectRoot, "libs")
+		var libFile string
 		if runtime.GOOS == "darwin" {
-			onnxruntime_go.SetSharedLibraryPath(filepath.Join(libPath, "libonnxruntime.dylib"))
+			libFile = "libonnxruntime.1.20.0.dylib"
 		} else {
-			onnxruntime_go.SetSharedLibraryPath(filepath.Join(libPath, "onnxruntime.so"))
+			libFile = "libonnxruntime.so"
 		}
+
+		// Set environment variables for library loading
+		os.Setenv("DYLD_LIBRARY_PATH", libPath)
+		os.Setenv("DYLD_FALLBACK_LIBRARY_PATH", libPath)
+		os.Setenv("LD_LIBRARY_PATH", libPath)
+
+		// Set the ONNX Runtime library path
+		libFullPath := filepath.Join(libPath, libFile)
+		onnxruntime_go.SetSharedLibraryPath(libFullPath)
 
 		// Initialize ONNX runtime
 		initErr = onnxruntime_go.InitializeEnvironment()

@@ -253,6 +253,64 @@ memCfg := embedding.MemoryConfig{
 }
 ```
 
+## Performance
+
+### Benchmark Results
+
+All benchmarks were run on MacBook Pro with Apple M-series chip. The results show comparable performance between CPU and CoreML (Metal) implementations across different scenarios.
+
+#### Single Embedding Performance
+| Mode   | Operations/sec | Latency | Memory/op | Allocations/op |
+|--------|---------------|---------|-----------|----------------|
+| CPU    | 42 ops/sec    | 23.8ms  | 816 KB    | 298           |
+| CoreML | 42 ops/sec    | 23.9ms  | 816 KB    | 298           |
+
+#### Batch Processing Performance
+| Batch Size | Mode   | Operations/sec | Latency | Memory/op | Allocations/op |
+|------------|--------|----------------|---------|-----------|----------------|
+| Small (8)  | CPU    | 11 ops/sec     | 91.5ms  | 3.2 MB    | 1,120         |
+| Small (8)  | CoreML | 11 ops/sec     | 91.4ms  | 3.2 MB    | 1,120         |
+| Medium (32)| CPU    | 2.6 ops/sec    | 384ms   | 13.1 MB   | 4,372         |
+| Medium (32)| CoreML | 2.6 ops/sec    | 389ms   | 13.1 MB   | 4,372         |
+| Large (64) | CPU    | 1.2 ops/sec    | 808ms   | 26.2 MB   | 8,708         |
+| Large (64) | CoreML | 1.2 ops/sec    | 812ms   | 26.2 MB   | 8,708         |
+
+#### HTTP Endpoint Performance (Parallel Processing)
+| Mode   | Operations/sec | Latency | Memory/op | Allocations/op |
+|--------|---------------|---------|-----------|----------------|
+| CPU    | 64 ops/sec    | 15.6ms  | 848 KB    | 402           |
+| CoreML | 64 ops/sec    | 15.7ms  | 848 KB    | 403           |
+
+### Performance Characteristics
+
+1. **Latency**: Single embedding operations take ~24ms on both CPU and CoreML implementations.
+2. **Batch Processing**: Shows linear scaling with batch size, maintaining consistent performance across CPU and CoreML.
+3. **Memory Efficiency**: Memory usage scales linearly with batch size, with minimal overhead.
+4. **Parallel Processing**: HTTP endpoints show improved throughput due to concurrent processing.
+5. **Resource Usage**: Both CPU and CoreML implementations show similar memory allocation patterns.
+
+### Optimization Tips
+
+1. **Batch Processing**
+   - Use batch sizes between 8-32 for optimal throughput/latency balance
+   - Consider async batch processing for high-throughput scenarios
+
+2. **Parallel Processing**
+   - HTTP endpoints provide best performance for parallel workloads
+   - Configure worker pool size based on available CPU cores
+
+3. **Memory Management**
+   - Monitor memory usage with larger batch sizes
+   - Use the built-in cache for frequently accessed embeddings
+
+4. **Hardware Acceleration**
+   - CoreML provides comparable performance to CPU
+   - Enable Metal acceleration for consistent performance
+
+5. **Resource Tuning**
+   - Adjust `INTER_OP_THREADS` and `INTRA_OP_THREADS` based on workload
+   - Configure `EMBEDDING_CACHE_SIZE` based on memory constraints
+
 ### Metal Acceleration
 
 ```go

@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -14,15 +18,35 @@ import (
 	"github.com/objones25/go-embeddings/pkg/server"
 )
 
-func setupBenchmarkServer() (*server.Server, func()) {
+func setupBenchmarkServer(b *testing.B, enableCoreML bool) (*server.Server, func()) {
+	// Get test data paths
+	workspaceRoot := filepath.Join("..", "..")
+	testDataPath := filepath.Join(workspaceRoot, "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+	tokenizerPath := filepath.Join(testDataPath, "tokenizer.json")
+
+	// Set up library paths
+	libPath := filepath.Join(workspaceRoot, "libs")
+	os.Setenv("ONNXRUNTIME_LIB_PATH", filepath.Join(libPath, "libonnxruntime.1.20.0.dylib"))
+	os.Setenv("DYLD_LIBRARY_PATH", libPath)
+	os.Setenv("DYLD_FALLBACK_LIBRARY_PATH", libPath)
+	os.Setenv("CGO_LDFLAGS", fmt.Sprintf("-L%s -ltokenizers -lonnxruntime -Wl,-rpath,%s", libPath, libPath))
+	os.Setenv("CGO_CFLAGS", fmt.Sprintf("-I%s", filepath.Join(workspaceRoot, "onnxruntime-osx-arm64-1.20.0", "include")))
+
 	config := &embedding.Config{
-		ModelPath: "../../testdata/model.onnx",
-		Tokenizer: embedding.TokenizerConfig{
-			LocalPath: "../../testdata/tokenizer.json",
+		ModelPath:   modelPath,
+		EnableMetal: enableCoreML,
+		CoreMLConfig: &embedding.CoreMLConfig{
+			EnableCaching: true,
+			RequireANE:    false,
 		},
 		BatchSize:         32,
 		MaxSequenceLength: 512,
 		Dimension:         384,
+		Tokenizer: embedding.TokenizerConfig{
+			LocalPath:      tokenizerPath,
+			SequenceLength: 512,
+		},
 		Options: embedding.Options{
 			Normalize:    true,
 			CacheEnabled: true,
@@ -31,7 +55,7 @@ func setupBenchmarkServer() (*server.Server, func()) {
 
 	service, err := embedding.NewService(context.Background(), config)
 	if err != nil {
-		panic(err)
+		b.Fatal(err)
 	}
 
 	serverConfig := &server.Config{
@@ -46,45 +70,56 @@ func setupBenchmarkServer() (*server.Server, func()) {
 	srv, err := server.NewServer(serverConfig, service)
 	if err != nil {
 		service.Close()
-		panic(err)
+		b.Fatal(err)
 	}
 
-	return srv, func() {
+	cleanup := func() {
 		srv.Shutdown(context.Background())
 		service.Close()
 	}
+
+	return srv, cleanup
 }
 
 func BenchmarkHTTPEmbed(b *testing.B) {
-	srv, cleanup := setupBenchmarkServer()
-	defer cleanup()
-
-	scenarios := []struct {
-		name string
-		text string
-	}{
-		{
-			name: "Short_Text",
-			text: "This is a short text.",
-		},
-		{
-			name: "Medium_Text",
-			text: "This is a medium length text that contains multiple words and should test the performance with a more realistic input size.",
-		},
-		{
-			name: "Long_Text",
-			text: strings.Repeat("This is a very long text with repeated content to test performance with large inputs. ", 10),
-		},
+	if runtime.GOOS != "darwin" {
+		b.Skip("Skipping benchmark on non-Darwin platform")
 	}
 
-	for _, scenario := range scenarios {
-		b.Run(scenario.name, func(b *testing.B) {
+	tests := []struct {
+		name        string
+		enableMetal bool
+		textLength  int
+	}{
+		{"CPU_Short_Text", false, 20},
+		{"CoreML_Short_Text", true, 20},
+		{"CPU_Medium_Text", false, 100},
+		{"CoreML_Medium_Text", true, 100},
+		{"CPU_Long_Text", false, 500},
+		{"CoreML_Long_Text", true, 500},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			srv, cleanup := setupBenchmarkServer(b, tt.enableMetal)
+			defer cleanup()
+
+			text := strings.Repeat("This is a test sentence. ", tt.textLength/20)
 			requestBody := map[string]interface{}{
-				"text": scenario.text,
+				"text": text,
 			}
 			body, err := json.Marshal(requestBody)
 			if err != nil {
 				b.Fatal(err)
+			}
+
+			// Warmup
+			req := httptest.NewRequest("POST", "/api/v1/embed", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.GetRouter().ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				b.Fatalf("warmup failed: expected status OK, got %v", w.Code)
 			}
 
 			b.ResetTimer()
@@ -92,9 +127,7 @@ func BenchmarkHTTPEmbed(b *testing.B) {
 				req := httptest.NewRequest("POST", "/api/v1/embed", bytes.NewReader(body))
 				req.Header.Set("Content-Type", "application/json")
 				w := httptest.NewRecorder()
-
 				srv.GetRouter().ServeHTTP(w, req)
-
 				if w.Code != http.StatusOK {
 					b.Fatalf("expected status OK, got %v", w.Code)
 				}
@@ -104,36 +137,33 @@ func BenchmarkHTTPEmbed(b *testing.B) {
 }
 
 func BenchmarkHTTPBatchEmbed(b *testing.B) {
-	srv, cleanup := setupBenchmarkServer()
-	defer cleanup()
-
-	scenarios := []struct {
-		name       string
-		batchSize  int
-		textLength int
-	}{
-		{
-			name:       "Small_Batch_Short_Texts",
-			batchSize:  2,
-			textLength: 10,
-		},
-		{
-			name:       "Medium_Batch_Medium_Texts",
-			batchSize:  8,
-			textLength: 50,
-		},
-		{
-			name:       "Large_Batch_Long_Texts",
-			batchSize:  32,
-			textLength: 100,
-		},
+	if runtime.GOOS != "darwin" {
+		b.Skip("Skipping benchmark on non-Darwin platform")
 	}
 
-	for _, scenario := range scenarios {
-		b.Run(scenario.name, func(b *testing.B) {
-			texts := make([]string, scenario.batchSize)
+	tests := []struct {
+		name        string
+		enableMetal bool
+		batchSize   int
+		textLength  int
+	}{
+		{"CPU_Small_Batch_Short", false, 4, 20},
+		{"CoreML_Small_Batch_Short", true, 4, 20},
+		{"CPU_Medium_Batch_Medium", false, 16, 100},
+		{"CoreML_Medium_Batch_Medium", true, 16, 100},
+		{"CPU_Large_Batch_Long", false, 32, 200},
+		{"CoreML_Large_Batch_Long", true, 32, 200},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			srv, cleanup := setupBenchmarkServer(b, tt.enableMetal)
+			defer cleanup()
+
+			// Create batch of texts
+			texts := make([]string, tt.batchSize)
 			for i := range texts {
-				texts[i] = strings.Repeat("a", scenario.textLength)
+				texts[i] = strings.Repeat("This is a test sentence. ", tt.textLength/20)
 			}
 
 			requestBody := map[string]interface{}{
@@ -144,14 +174,21 @@ func BenchmarkHTTPBatchEmbed(b *testing.B) {
 				b.Fatal(err)
 			}
 
+			// Warmup
+			req := httptest.NewRequest("POST", "/api/v1/embed/batch", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.GetRouter().ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				b.Fatalf("warmup failed: expected status OK, got %v", w.Code)
+			}
+
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				req := httptest.NewRequest("POST", "/api/v1/embed/batch", bytes.NewReader(body))
 				req.Header.Set("Content-Type", "application/json")
 				w := httptest.NewRecorder()
-
 				srv.GetRouter().ServeHTTP(w, req)
-
 				if w.Code != http.StatusOK {
 					b.Fatalf("expected status OK, got %v", w.Code)
 				}
@@ -161,89 +198,162 @@ func BenchmarkHTTPBatchEmbed(b *testing.B) {
 }
 
 func BenchmarkHTTPEmbedParallel(b *testing.B) {
-	srv, cleanup := setupBenchmarkServer()
-	defer cleanup()
-
-	requestBody := map[string]interface{}{
-		"text": "This is a sample text for benchmarking parallel HTTP server performance.",
-	}
-	body, err := json.Marshal(requestBody)
-	if err != nil {
-		b.Fatal(err)
+	if runtime.GOOS != "darwin" {
+		b.Skip("Skipping benchmark on non-Darwin platform")
 	}
 
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
+	tests := []struct {
+		name        string
+		enableMetal bool
+	}{
+		{"CPU_Parallel", false},
+		{"CoreML_Parallel", true},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			srv, cleanup := setupBenchmarkServer(b, tt.enableMetal)
+			defer cleanup()
+
+			requestBody := map[string]interface{}{
+				"text": "This is a sample text for benchmarking parallel HTTP server performance.",
+			}
+			body, err := json.Marshal(requestBody)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			// Warmup
 			req := httptest.NewRequest("POST", "/api/v1/embed", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
-
 			srv.GetRouter().ServeHTTP(w, req)
-
 			if w.Code != http.StatusOK {
-				b.Fatalf("expected status OK, got %v", w.Code)
+				b.Fatalf("warmup failed: expected status OK, got %v", w.Code)
 			}
-		}
-	})
+
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					req := httptest.NewRequest("POST", "/api/v1/embed", bytes.NewReader(body))
+					req.Header.Set("Content-Type", "application/json")
+					w := httptest.NewRecorder()
+					srv.GetRouter().ServeHTTP(w, req)
+					if w.Code != http.StatusOK {
+						b.Fatalf("expected status OK, got %v", w.Code)
+					}
+				}
+			})
+		})
+	}
 }
 
 func BenchmarkHTTPBatchEmbedParallel(b *testing.B) {
-	srv, cleanup := setupBenchmarkServer()
-	defer cleanup()
-
-	requestBody := map[string]interface{}{
-		"texts": []string{
-			"First sample text for parallel batch processing.",
-			"Second sample text with different content.",
-			"Third sample text to test parallel performance.",
-			"Fourth sample text for comprehensive testing.",
-		},
-	}
-	body, err := json.Marshal(requestBody)
-	if err != nil {
-		b.Fatal(err)
+	if runtime.GOOS != "darwin" {
+		b.Skip("Skipping benchmark on non-Darwin platform")
 	}
 
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
+	tests := []struct {
+		name        string
+		enableMetal bool
+		batchSize   int
+	}{
+		{"CPU_Parallel_Small_Batch", false, 4},
+		{"CoreML_Parallel_Small_Batch", true, 4},
+		{"CPU_Parallel_Large_Batch", false, 32},
+		{"CoreML_Parallel_Large_Batch", true, 32},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			srv, cleanup := setupBenchmarkServer(b, tt.enableMetal)
+			defer cleanup()
+
+			// Create batch of texts
+			texts := make([]string, tt.batchSize)
+			for i := range texts {
+				texts[i] = fmt.Sprintf("Sample text %d for parallel batch processing.", i)
+			}
+
+			requestBody := map[string]interface{}{
+				"texts": texts,
+			}
+			body, err := json.Marshal(requestBody)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			// Warmup
 			req := httptest.NewRequest("POST", "/api/v1/embed/batch", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
-
 			srv.GetRouter().ServeHTTP(w, req)
-
 			if w.Code != http.StatusOK {
-				b.Fatalf("expected status OK, got %v", w.Code)
+				b.Fatalf("warmup failed: expected status OK, got %v", w.Code)
 			}
-		}
-	})
+
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					req := httptest.NewRequest("POST", "/api/v1/embed/batch", bytes.NewReader(body))
+					req.Header.Set("Content-Type", "application/json")
+					w := httptest.NewRecorder()
+					srv.GetRouter().ServeHTTP(w, req)
+					if w.Code != http.StatusOK {
+						b.Fatalf("expected status OK, got %v", w.Code)
+					}
+				}
+			})
+		})
+	}
 }
 
 func BenchmarkMemoryHTTPEmbed(b *testing.B) {
-	srv, cleanup := setupBenchmarkServer()
-	defer cleanup()
-
-	requestBody := map[string]interface{}{
-		"text": strings.Repeat("Memory benchmark test text. ", 20),
-	}
-	body, err := json.Marshal(requestBody)
-	if err != nil {
-		b.Fatal(err)
+	if runtime.GOOS != "darwin" {
+		b.Skip("Skipping benchmark on non-Darwin platform")
 	}
 
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest("POST", "/api/v1/embed", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
+	tests := []struct {
+		name        string
+		enableMetal bool
+	}{
+		{"CPU_Memory", false},
+		{"CoreML_Memory", true},
+	}
 
-		srv.GetRouter().ServeHTTP(w, req)
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			srv, cleanup := setupBenchmarkServer(b, tt.enableMetal)
+			defer cleanup()
 
-		if w.Code != http.StatusOK {
-			b.Fatalf("expected status OK, got %v", w.Code)
-		}
+			requestBody := map[string]interface{}{
+				"text": strings.Repeat("Memory benchmark test text. ", 20),
+			}
+			body, err := json.Marshal(requestBody)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			// Warmup
+			req := httptest.NewRequest("POST", "/api/v1/embed", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.GetRouter().ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				b.Fatalf("warmup failed: expected status OK, got %v", w.Code)
+			}
+
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				req := httptest.NewRequest("POST", "/api/v1/embed", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				srv.GetRouter().ServeHTTP(w, req)
+				if w.Code != http.StatusOK {
+					b.Fatalf("expected status OK, got %v", w.Code)
+				}
+			}
+		})
 	}
 }

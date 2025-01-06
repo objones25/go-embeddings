@@ -1,3 +1,6 @@
+//go:build darwin && coreml
+// +build darwin,coreml
+
 package embedding
 
 import (

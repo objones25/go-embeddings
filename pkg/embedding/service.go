@@ -102,13 +102,8 @@ func initializeONNXRuntime() error {
 	return initErr
 }
 
-// NewService creates a new embedding service
-func NewService(ctx context.Context, config *Config) (Service, error) {
-	logger, err := zap.NewProduction()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create logger: %v", err)
-	}
-
+// NewServiceWithLogger creates a new embedding service with a custom logger
+func NewServiceWithLogger(ctx context.Context, config *Config, logger *zap.Logger) (Service, error) {
 	// Validate batch size
 	if config.BatchSize <= 0 {
 		return nil, fmt.Errorf("invalid batch size: %d", config.BatchSize)
@@ -134,6 +129,33 @@ func NewService(ctx context.Context, config *Config) (Service, error) {
 	// Configure session options
 	opts.SetIntraOpNumThreads(config.InterOpThreads)
 	opts.SetInterOpNumThreads(config.IntraOpThreads)
+
+	// Enable hardware acceleration if requested and available
+	if config.EnableMetal && runtime.GOOS == "darwin" {
+		logger.Info("Enabling CoreML execution provider for hardware acceleration")
+
+		// Calculate CoreML flags based on configuration
+		var flags uint32
+		if config.CoreMLConfig != nil {
+			if config.CoreMLConfig.EnableCaching {
+				flags |= 1 // COREML_FLAG_USE_CACHE
+			}
+			if config.CoreMLConfig.RequireANE {
+				flags |= 2 // COREML_FLAG_ONLY_ENABLE_DEVICE_WITH_ANE
+			}
+		}
+
+		if err := opts.AppendExecutionProviderCoreML(flags); err != nil {
+			logger.Warn("Failed to enable CoreML execution provider, falling back to CPU",
+				zap.Error(err),
+				zap.Bool("caching_enabled", config.CoreMLConfig != nil && config.CoreMLConfig.EnableCaching),
+				zap.Bool("ane_required", config.CoreMLConfig != nil && config.CoreMLConfig.RequireANE))
+		} else {
+			logger.Info("Successfully enabled CoreML execution provider",
+				zap.Bool("caching_enabled", config.CoreMLConfig != nil && config.CoreMLConfig.EnableCaching),
+				zap.Bool("ane_required", config.CoreMLConfig != nil && config.CoreMLConfig.RequireANE))
+		}
+	}
 
 	// Create ONNX session
 	session, err := onnxruntime_go.NewDynamicSession[int64, float32](
@@ -171,6 +193,15 @@ func NewService(ctx context.Context, config *Config) (Service, error) {
 	}
 
 	return s, nil
+}
+
+// NewService creates a new embedding service with default logger
+func NewService(ctx context.Context, config *Config) (Service, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %v", err)
+	}
+	return NewServiceWithLogger(ctx, config, logger)
 }
 
 // Embed generates embeddings for a single text
@@ -235,8 +266,8 @@ func (s *service) Embed(ctx context.Context, text string) ([]float32, error) {
 	}
 	defer tokenTypeTensor.Destroy()
 
-	fmt.Printf("DEBUG Service: Input dimensions:\n  - Sequence length: %d\n  - Input data: %v\n  - Attention mask: %v\n  - Token type IDs: %v\n",
-		len(tokens), tokens, attentionMask, tokenTypeIDs)
+	// fmt.Printf("DEBUG Service: Input dimensions:\n  - Sequence length: %d\n  - Input data: %v\n  - Attention mask: %v\n  - Token type IDs: %v\n",
+	// 	len(tokens), tokens, attentionMask, tokenTypeIDs)
 
 	// Create output tensors
 	hiddenTensor, err := onnxruntime_go.NewEmptyTensor[float32]([]int64{1, int64(len(tokens)), int64(s.config.Dimension)})

@@ -1,23 +1,25 @@
 package unit
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/objones25/go-embeddings/pkg/embedding"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func init() {
-	// Enable debug logging
-	log.SetFlags(log.Lshortfile | log.LstdFlags)
-
 	// Set up library paths
 	workspaceDir, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -31,29 +33,6 @@ func init() {
 	os.Setenv("ONNXRUNTIME_LIB_PATH", filepath.Join(libsDir, "libonnxruntime.1.20.0.dylib"))
 	os.Setenv("CGO_LDFLAGS", fmt.Sprintf("-L%s", libsDir))
 
-	// Log important environment variables
-	log.Printf("DYLD_LIBRARY_PATH=%s", os.Getenv("DYLD_LIBRARY_PATH"))
-	log.Printf("LD_LIBRARY_PATH=%s", os.Getenv("LD_LIBRARY_PATH"))
-	log.Printf("ONNXRUNTIME_LIB_PATH=%s", os.Getenv("ONNXRUNTIME_LIB_PATH"))
-	log.Printf("CGO_LDFLAGS=%s", os.Getenv("CGO_LDFLAGS"))
-	log.Printf("PWD=%s", os.Getenv("PWD"))
-
-	// Log library files
-	files, err := os.ReadDir(libsDir)
-	if err != nil {
-		log.Printf("Error reading libs dir: %v", err)
-	} else {
-		log.Printf("Library files in %s:", libsDir)
-		for _, file := range files {
-			info, err := file.Info()
-			if err != nil {
-				log.Printf("  %s (error getting info: %v)", file.Name(), err)
-			} else {
-				log.Printf("  %s (%d bytes)", file.Name(), info.Size())
-			}
-		}
-	}
-
 	// Create symlink for ONNX Runtime library
 	onnxRuntimePath := filepath.Join(libsDir, "libonnxruntime.1.20.0.dylib")
 	onnxRuntimeSymlink := filepath.Join(libsDir, "libonnxruntime.dylib")
@@ -63,18 +42,6 @@ func init() {
 	if err := os.Symlink(onnxRuntimePath, onnxRuntimeSymlink); err != nil {
 		log.Printf("Error creating symlink: %v", err)
 	}
-
-	// Log test data paths
-	testDataPath := filepath.Join(workspaceDir, "testdata")
-	if _, err := os.Stat(testDataPath); os.IsNotExist(err) {
-		log.Printf("Warning: Test data directory does not exist")
-	}
-
-	modelPath := filepath.Join(testDataPath, "model.onnx")
-	tokenizerPath := filepath.Join(testDataPath, "tokenizer.json")
-
-	log.Printf("Model path: %s (exists: %v)", modelPath, fileExists(modelPath))
-	log.Printf("Tokenizer path: %s (exists: %v)", tokenizerPath, fileExists(tokenizerPath))
 }
 
 func fileExists(path string) bool {
@@ -136,22 +103,11 @@ func TestNewService(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log.Printf("Running test case: %s", tt.name)
-			if tt.config != nil && tt.config.ModelPath != "" {
-				log.Printf("Using model path: %s", tt.config.ModelPath)
-			}
-
 			service, err := embedding.NewService(context.Background(), tt.config)
 			if tt.expectError {
 				assert.Error(t, err)
-				if err != nil {
-					log.Printf("Got expected error: %v", err)
-				}
 				assert.Nil(t, service)
 			} else {
-				if err != nil {
-					log.Printf("Unexpected error: %v", err)
-				}
 				assert.NoError(t, err)
 				assert.NotNil(t, service)
 			}
@@ -179,7 +135,6 @@ func TestEmbed(t *testing.T) {
 		},
 	}
 
-	log.Printf("Creating service with config: %+v", config)
 	service, err := embedding.NewService(context.Background(), config)
 	require.NoError(t, err)
 	defer service.Close()
@@ -212,18 +167,11 @@ func TestEmbed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log.Printf("Running test case: %s with text: %q", tt.name, tt.text)
 			embedding, err := service.Embed(tt.ctx, tt.text)
 			if tt.expectError {
 				assert.Error(t, err)
-				if err != nil {
-					log.Printf("Got expected error: %v", err)
-				}
 				assert.Nil(t, embedding)
 			} else {
-				if err != nil {
-					log.Printf("Unexpected error: %v", err)
-				}
 				assert.NoError(t, err)
 				assert.NotNil(t, embedding)
 				assert.Len(t, embedding, config.Dimension)
@@ -252,7 +200,6 @@ func TestBatchEmbed(t *testing.T) {
 		},
 	}
 
-	log.Printf("Creating service with config: %+v", config)
 	service, err := embedding.NewService(context.Background(), config)
 	require.NoError(t, err)
 	defer service.Close()
@@ -302,18 +249,11 @@ func TestBatchEmbed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log.Printf("Running test case: %s with %d texts", tt.name, len(tt.texts))
 			embeddings, err := service.BatchEmbed(tt.ctx, tt.texts)
 			if tt.expectError {
 				assert.Error(t, err)
-				if err != nil {
-					log.Printf("Got expected error: %v", err)
-				}
 				assert.Nil(t, embeddings)
 			} else {
-				if err != nil {
-					log.Printf("Unexpected error: %v", err)
-				}
 				assert.NoError(t, err)
 				assert.NotNil(t, embeddings)
 				assert.Equal(t, len(embeddings), len(tt.texts))
@@ -345,7 +285,6 @@ func TestBatchEmbedAsync(t *testing.T) {
 		},
 	}
 
-	log.Printf("Creating service with config: %+v", config)
 	service, err := embedding.NewService(context.Background(), config)
 	require.NoError(t, err)
 	defer service.Close()
@@ -385,31 +324,23 @@ func TestBatchEmbedAsync(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create a context with timeout
 			ctx, cancel := context.WithTimeout(tt.ctx, 30*time.Second)
 			defer cancel()
 
-			log.Printf("Running test case: %s with %d texts", tt.name, len(tt.texts))
 			results := make(chan embedding.Result)
 			errors := make(chan error)
 
-			log.Printf("Starting BatchEmbedAsync...")
 			err := service.BatchEmbedAsync(ctx, tt.texts, results, errors)
 			if tt.expectError {
 				assert.Error(t, err)
-				if err != nil {
-					log.Printf("Got expected error: %v", err)
-				}
 				return
 			}
 			assert.NoError(t, err)
 
-			// Collect results and errors
 			var receivedResults []embedding.Result
 			var receivedErrors []error
 			done := make(chan struct{})
 
-			log.Printf("Starting result collection goroutine...")
 			go func() {
 				defer close(done)
 				expectedResults := len(tt.texts)
@@ -419,31 +350,24 @@ func TestBatchEmbedAsync(t *testing.T) {
 					select {
 					case result, ok := <-results:
 						if !ok {
-							log.Printf("Results channel closed")
 							return
 						}
-						log.Printf("Received result for text: %q (embedding dimension: %d)", result.Text, len(result.Embedding))
 						receivedResults = append(receivedResults, result)
 						receivedCount++
 					case err, ok := <-errors:
 						if !ok {
-							log.Printf("Errors channel closed")
 							return
 						}
-						log.Printf("Received error: %v", err)
 						receivedErrors = append(receivedErrors, err)
 						return
 					case <-ctx.Done():
-						log.Printf("Context cancelled or timed out")
 						return
 					}
 				}
 			}()
 
-			log.Printf("Waiting for done signal...")
 			select {
 			case <-done:
-				log.Printf("Done signal received")
 			case <-ctx.Done():
 				t.Fatalf("Test timed out or context cancelled: %v", ctx.Err())
 			}
@@ -461,4 +385,253 @@ func cancelledContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	return ctx
+}
+
+func TestCoreMLInitialization(t *testing.T) {
+	// Get test data paths
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+	tokenizerPath := filepath.Join(testDataPath, "tokenizer.json")
+
+	tests := []struct {
+		name           string
+		config         *embedding.Config
+		expectCoreML   bool
+		expectError    bool
+		errorContains  string
+		validateLogger func(t *testing.T, logs []string)
+	}{
+		{
+			name: "CoreML enabled on Darwin with ANE",
+			config: &embedding.Config{
+				ModelPath:   modelPath,
+				EnableMetal: true,
+				CoreMLConfig: &embedding.CoreMLConfig{
+					EnableCaching: true,
+					RequireANE:    true,
+				},
+				BatchSize: 32, // Add required batch size
+				Dimension: 384,
+				Tokenizer: embedding.TokenizerConfig{
+					LocalPath:      tokenizerPath,
+					SequenceLength: 512,
+				},
+			},
+			expectCoreML: true,
+			validateLogger: func(t *testing.T, logs []string) {
+				found := false
+				for _, log := range logs {
+					if strings.Contains(log, `"msg":"Successfully enabled CoreML execution provider"`) &&
+						strings.Contains(log, `"caching_enabled":true`) &&
+						strings.Contains(log, `"ane_required":true`) {
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "Expected to find CoreML success log with caching and ANE enabled")
+			},
+		},
+		{
+			name: "CoreML enabled on Darwin without ANE",
+			config: &embedding.Config{
+				ModelPath:   modelPath,
+				EnableMetal: true,
+				CoreMLConfig: &embedding.CoreMLConfig{
+					EnableCaching: true,
+					RequireANE:    false,
+				},
+				BatchSize: 32, // Add required batch size
+				Dimension: 384,
+				Tokenizer: embedding.TokenizerConfig{
+					LocalPath:      tokenizerPath,
+					SequenceLength: 512,
+				},
+			},
+			expectCoreML: true,
+			validateLogger: func(t *testing.T, logs []string) {
+				found := false
+				for _, log := range logs {
+					if strings.Contains(log, `"msg":"Successfully enabled CoreML execution provider"`) &&
+						strings.Contains(log, `"caching_enabled":true`) &&
+						strings.Contains(log, `"ane_required":false`) {
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "Expected to find CoreML success log with caching enabled and ANE disabled")
+			},
+		},
+		{
+			name: "CoreML disabled",
+			config: &embedding.Config{
+				ModelPath:   modelPath,
+				EnableMetal: false,
+				BatchSize:   32, // Add required batch size
+				Dimension:   384,
+				Tokenizer: embedding.TokenizerConfig{
+					LocalPath:      tokenizerPath,
+					SequenceLength: 512,
+				},
+			},
+			expectCoreML: false,
+			validateLogger: func(t *testing.T, logs []string) {
+				for _, log := range logs {
+					assert.NotContains(t, log, "CoreML execution provider")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Skip test if not on Darwin
+			if runtime.GOOS != "darwin" {
+				t.Skip("Skipping CoreML test on non-Darwin platform")
+			}
+
+			// Verify test files exist
+			if _, err := os.Stat(tt.config.ModelPath); os.IsNotExist(err) {
+				t.Skipf("Model file not found at %s, skipping test", tt.config.ModelPath)
+			}
+			if _, err := os.Stat(tt.config.Tokenizer.LocalPath); os.IsNotExist(err) {
+				t.Skipf("Tokenizer file not found at %s, skipping test", tt.config.Tokenizer.LocalPath)
+			}
+
+			// Set up test logger to capture logs
+			var logBuffer bytes.Buffer
+			logger := zap.New(
+				zapcore.NewCore(
+					zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+					zapcore.AddSync(&logBuffer),
+					zapcore.InfoLevel,
+				),
+			)
+
+			// Create service with test configuration and custom logger
+			ctx := context.Background()
+			svc, err := embedding.NewServiceWithLogger(ctx, tt.config, logger)
+
+			// Check error expectations
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+				return
+			} else {
+				assert.NoError(t, err)
+			}
+
+			// Clean up service
+			defer func() {
+				if svc != nil {
+					svc.Close()
+				}
+			}()
+
+			// Validate logs
+			logs := strings.Split(logBuffer.String(), "\n")
+			if tt.validateLogger != nil {
+				tt.validateLogger(t, logs)
+			}
+		})
+	}
+}
+
+// TestCoreMLPerformance tests the performance difference between CPU and CoreML
+func TestCoreMLPerformance(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Skipping CoreML performance test on non-Darwin platform")
+	}
+
+	// Get test data paths
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+	tokenizerPath := filepath.Join(testDataPath, "tokenizer.json")
+
+	// Verify test files exist
+	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+		t.Skipf("Model file not found at %s, skipping test", modelPath)
+	}
+	if _, err := os.Stat(tokenizerPath); os.IsNotExist(err) {
+		t.Skipf("Tokenizer file not found at %s, skipping test", tokenizerPath)
+	}
+
+	// Create test configurations
+	baseConfig := &embedding.Config{
+		ModelPath: modelPath,
+		Dimension: 384,
+		Tokenizer: embedding.TokenizerConfig{
+			LocalPath:      tokenizerPath,
+			SequenceLength: 512,
+		},
+		BatchSize: 1,
+	}
+
+	// CPU configuration
+	cpuConfig := *baseConfig
+	cpuConfig.EnableMetal = false
+
+	// CoreML configuration
+	coreMLConfig := *baseConfig
+	coreMLConfig.EnableMetal = true
+	coreMLConfig.CoreMLConfig = &embedding.CoreMLConfig{
+		EnableCaching: true,
+		RequireANE:    false,
+	}
+
+	ctx := context.Background()
+
+	// Create services
+	cpuService, err := embedding.NewService(ctx, &cpuConfig)
+	require.NoError(t, err)
+	defer cpuService.Close()
+
+	coreMLService, err := embedding.NewService(ctx, &coreMLConfig)
+	require.NoError(t, err)
+	defer coreMLService.Close()
+
+	// Test text
+	testText := "This is a test sentence for performance comparison between CPU and CoreML execution providers."
+
+	// Warm up both services
+	_, err = cpuService.Embed(ctx, testText)
+	require.NoError(t, err)
+	_, err = coreMLService.Embed(ctx, testText)
+	require.NoError(t, err)
+
+	// Benchmark function
+	benchmark := func(svc embedding.Service) time.Duration {
+		start := time.Now()
+		_, err := svc.Embed(ctx, testText)
+		require.NoError(t, err)
+		return time.Since(start)
+	}
+
+	// Run benchmarks
+	const iterations = 10
+	cpuTimes := make([]time.Duration, iterations)
+	coreMLTimes := make([]time.Duration, iterations)
+
+	for i := 0; i < iterations; i++ {
+		cpuTimes[i] = benchmark(cpuService)
+		coreMLTimes[i] = benchmark(coreMLService)
+	}
+
+	// Calculate average times
+	var cpuTotal, coreMLTotal time.Duration
+	for i := 0; i < iterations; i++ {
+		cpuTotal += cpuTimes[i]
+		coreMLTotal += coreMLTimes[i]
+	}
+	cpuAvg := cpuTotal / iterations
+	coreMLAvg := coreMLTotal / iterations
+
+	// Log results
+	t.Logf("CPU average time: %v", cpuAvg)
+	t.Logf("CoreML average time: %v", coreMLAvg)
+	t.Logf("CoreML speedup: %.2fx", float64(cpuAvg)/float64(coreMLAvg))
+
+	// Assert that CoreML is faster (allowing for some variance)
+	assert.Less(t, coreMLAvg, cpuAvg*2, "CoreML should not be significantly slower than CPU")
 }

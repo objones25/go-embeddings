@@ -18,8 +18,9 @@ type Config struct {
 	Dimension int
 
 	// Hardware acceleration
-	EnableMetal   bool
-	MetalDeviceID int
+	EnableMetal   bool // For backward compatibility, controls CoreML on Darwin
+	MetalDeviceID int  // Unused, kept for backward compatibility
+	CoreMLConfig  *CoreMLConfig
 
 	// Performance settings
 	BatchSize         int
@@ -46,11 +47,10 @@ type Options struct {
 	CacheEnabled   bool
 }
 
-// MetalConfig contains Metal-specific settings
-type MetalConfig struct {
-	WorkgroupSize int
-	TileSize      int
-	VectorWidth   int
+// CoreMLConfig contains CoreML-specific settings for Apple Silicon
+type CoreMLConfig struct {
+	EnableCaching bool // Enable caching of compiled CoreML models
+	RequireANE    bool // Require Apple Neural Engine
 }
 
 // GetModelDimension returns the embedding dimension for a given model ID
@@ -96,6 +96,12 @@ func LoadConfig() (*Config, error) {
 	dimension := getEnvInt("EMBEDDING_DIMENSION", GetModelDimension(modelID))
 	maxSeqLength := getEnvInt("MAX_SEQUENCE_LENGTH", 512)
 
+	// Load CoreML configuration
+	coreMLConfig := &CoreMLConfig{
+		EnableCaching: getEnvBool("ENABLE_COREML_CACHE", true),
+		RequireANE:    getEnvBool("REQUIRE_ANE", false),
+	}
+
 	config := &Config{
 		ModelPath: os.Getenv("MODEL_PATH"),
 		Tokenizer: TokenizerConfig{
@@ -106,8 +112,9 @@ func LoadConfig() (*Config, error) {
 			SequenceLength: maxSeqLength,
 		},
 		Dimension:         dimension,
-		EnableMetal:       getEnvBool("ENABLE_METAL", true),
-		MetalDeviceID:     getEnvInt("METAL_DEVICE_ID", 0),
+		EnableMetal:       getEnvBool("ENABLE_METAL", true), // Controls CoreML on Darwin
+		MetalDeviceID:     0,                                // Unused, kept for compatibility
+		CoreMLConfig:      coreMLConfig,
 		BatchSize:         getEnvInt("BATCH_SIZE", 32),
 		MaxSequenceLength: maxSeqLength,
 		InterOpThreads:    getEnvInt("INTER_OP_THREADS", 1),

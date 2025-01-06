@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yalue/onnxruntime_go"
 	"go.uber.org/zap"
@@ -44,6 +45,7 @@ type service struct {
 	logger     *zap.Logger
 	cache      *Cache
 	workerPool chan struct{}
+	batcher    *DynamicBatcher
 	mu         sync.RWMutex
 }
 
@@ -202,6 +204,11 @@ func NewServiceWithLogger(ctx context.Context, config *Config, logger *zap.Logge
 		workerPool: workerPool,
 	}
 
+	// Initialize dynamic batcher
+	s.batcher = NewDynamicBatcher(s, config.BatchSize,
+		config.RequestTimeout,
+		10*time.Millisecond) // 10ms collection window
+
 	return s, nil
 }
 
@@ -232,103 +239,8 @@ func (s *service) Embed(ctx context.Context, text string) ([]float32, error) {
 		}
 	}
 
-	// Check context again before expensive tokenization
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Tokenize text
-	tokens, err := s.tokenizer.Tokenize(text, s.config.MaxSequenceLength)
-	if err != nil {
-		return nil, fmt.Errorf("failed to tokenize text: %w", err)
-	}
-
-	// Create attention mask (1 for all tokens)
-	attentionMask := make([]int64, len(tokens))
-	for i := range attentionMask {
-		attentionMask[i] = 1
-	}
-
-	// Create token type IDs (0 for all tokens)
-	tokenTypeIDs := make([]int64, len(tokens))
-
-	// Check context before tensor creation
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Create input tensors
-	inputTensor, err := onnxruntime_go.NewTensor([]int64{1, int64(len(tokens))}, tokens)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create input tensor: %w", err)
-	}
-	defer inputTensor.Destroy()
-
-	attentionTensor, err := onnxruntime_go.NewTensor([]int64{1, int64(len(attentionMask))}, attentionMask)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create attention mask tensor: %w", err)
-	}
-	defer attentionTensor.Destroy()
-
-	tokenTypeTensor, err := onnxruntime_go.NewTensor([]int64{1, int64(len(tokenTypeIDs))}, tokenTypeIDs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token type tensor: %w", err)
-	}
-	defer tokenTypeTensor.Destroy()
-
-	// fmt.Printf("DEBUG Service: Input dimensions:\n  - Sequence length: %d\n  - Input data: %v\n  - Attention mask: %v\n  - Token type IDs: %v\n",
-	// 	len(tokens), tokens, attentionMask, tokenTypeIDs)
-
-	// Create output tensors
-	hiddenTensor, err := onnxruntime_go.NewEmptyTensor[float32]([]int64{1, int64(len(tokens)), int64(s.config.Dimension)})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create hidden tensor: %w", err)
-	}
-	defer hiddenTensor.Destroy()
-
-	poolerTensor, err := onnxruntime_go.NewEmptyTensor[float32]([]int64{1, int64(s.config.Dimension)})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create pooler tensor: %w", err)
-	}
-	defer poolerTensor.Destroy()
-
-	// Check context before running inference
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Run inference with a goroutine to support cancellation
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- s.session.Run(
-			[]*onnxruntime_go.Tensor[int64]{inputTensor, attentionTensor, tokenTypeTensor},
-			[]*onnxruntime_go.Tensor[float32]{hiddenTensor, poolerTensor},
-		)
-	}()
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return nil, fmt.Errorf("failed to run inference: %w", err)
-		}
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
-	// Get embedding from pooler output
-	embedding := make([]float32, s.config.Dimension)
-	copy(embedding, poolerTensor.GetData())
-
-	if s.config.Options.Normalize {
-		normalizeVector(embedding)
-	}
-
-	// Cache result if enabled
-	if s.cache != nil {
-		s.cache.Set(text, embedding)
-	}
-
-	return embedding, nil
+	// Use dynamic batcher for single requests
+	return s.batcher.QueueRequest(ctx, text)
 }
 
 // BatchEmbed generates embeddings for multiple texts
@@ -566,6 +478,10 @@ func (s *service) processBatch(ctx context.Context, batch []string) ([][]float32
 func (s *service) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.batcher != nil {
+		s.batcher.Shutdown()
+	}
 
 	if s.session != nil {
 		s.session.Destroy()

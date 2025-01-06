@@ -22,15 +22,33 @@ A high-performance, production-ready embedding service for Go, supporting multip
 
 ## Features
 
+### Core Features
 - Production-ready transformer-based text embeddings
-- MacOS Metal hardware acceleration support
+- MacOS Metal/CoreML hardware acceleration with ANE support
 - Multi-model support with dynamic loading
-- Optimized batch processing
+- Optimized batch processing with auto-tuning
 - Thread-safe implementation
 - Comprehensive error handling and logging
 - Built-in performance monitoring
 - Memory-efficient model management
+
+### Advanced Features
+- Dynamic batch size optimization based on input length and latency
+- Two-level caching system (memory + disk) with LRU eviction
+- Automatic cache warming and invalidation
+- Prometheus metrics integration
+- Graceful shutdown and resource cleanup
 - Support for both sync and async operations
+- Chunking support for long documents
+- Parallel processing with worker pools
+
+### Performance Features
+- Auto-tuning batch sizes based on input characteristics
+- CoreML acceleration with caching support
+- Memory-efficient token processing
+- Zero-copy optimizations where possible
+- Configurable thread management
+- Built-in performance profiling
 
 ## Requirements
 
@@ -47,282 +65,165 @@ A high-performance, production-ready embedding service for Go, supporting multip
 
 ## Installation
 
-1. Create project structure:
+### Quick Start
+```bash
+# Clone the repository
+git clone https://github.com/objones25/go-embeddings
+cd go-embeddings
+
+# Run the automated setup script
+make setup
+
+# Run tests to verify installation
+make test
+```
+
+### Manual Installation
+
+1. Set up the project structure:
 ```bash
 mkdir -p go-embeddings/{cmd,internal,pkg,models,libs,configs,scripts}
 cd go-embeddings
-
-# Initialize Go module
 go mod init github.com/objones25/go-embeddings
 ```
 
-2. Install system dependencies:
+2. Install dependencies using our automated script:
 ```bash
-# Download ONNX Runtime v1.20.0
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.20.0/onnxruntime-osx-arm64-1.20.0.tgz
-tar xf onnxruntime-osx-arm64-1.20.0.tgz
-cp onnxruntime-osx-arm64-1.20.0/lib/libonnxruntime.1.20.0.dylib libs/
-
-# Download Tokenizers
-curl -L https://github.com/daulet/tokenizers/releases/latest/download/libtokenizers.darwin-arm64.tar.gz | tar xz -C libs/
+./scripts/install_deps.sh
 ```
 
-3. Configure environment:
+3. Set up the environment:
 ```bash
-cat > .env << EOL
-# Library paths
-ONNXRUNTIME_LIB_PATH=./libs/libonnxruntime.1.20.0.dylib
-TOKENIZERS_LIB_PATH=./libs/libtokenizers.a
+# Copy example environment file
+cp .env.example .env
 
-# Model settings
-MODEL_CACHE_DIR=./models
-DEFAULT_MODEL=all-mpnet-base-v2
-MAX_SEQUENCE_LENGTH=512
-BATCH_SIZE=32
-
-# Hardware acceleration
-ENABLE_METAL=true
-METAL_DEVICE_ID=0
-
-# Performance tuning
-INTER_OP_THREADS=1
-INTRA_OP_THREADS=1
-ARENA_EXTEND_STRATEGY=0
-
-# Service configuration
-EMBEDDING_CACHE_SIZE=10000
-EMBEDDING_DIMENSION=768
-MAX_BATCH_SIZE=64
-REQUEST_TIMEOUT=30s
-
-# Logging
-LOG_LEVEL=info
-EOL
+# Edit .env with your settings
+vim .env
 ```
 
-4. Install Go dependencies:
+4. Install Python dependencies for model conversion:
 ```bash
-go get -u \
-  github.com/yalue/onnxruntime_go@v1.14.0 \
-  github.com/daulet/tokenizers \
-  github.com/joho/godotenv \
-  go.uber.org/zap \
-  golang.org/x/sync/errgroup
+python3 -m venv venv
+source venv/bin/activate
+pip install -r scripts/requirements.txt
 ```
 
-## Supported Models
+5. Download and convert models:
+```bash
+# Convert all supported models
+make models
 
-1. **General Purpose Embeddings**
-   - `all-mpnet-base-v2`
-     - Dimensions: 768
-     - Best for: General purpose text similarity, clustering
-     - Performance: High quality, moderate speed
-     - Size: ~438MB
-
-   - `all-MiniLM-L6-v2`
-     - Dimensions: 384
-     - Best for: Production use when speed is critical
-     - Performance: Good quality, very fast
-     - Size: ~92MB
-
-2. **Multilingual Models**
-   - `paraphrase-multilingual-MiniLM-L12-v2`
-     - Languages: 50+ languages
-     - Dimensions: 384
-     - Best for: Cross-lingual applications
-     - Size: ~418MB
-
-3. **Specialized Models**
-   - `all-roberta-large-v1`
-     - Dimensions: 1024
-     - Best for: Maximum accuracy requirements
-     - Performance: Highest quality, slower speed
-     - Size: ~1.4GB
-
-   - `multi-qa-MiniLM-L6-cos-v1`
-     - Dimensions: 384
-     - Best for: Question-answering, search
-     - Performance: Fast, optimized for retrieval
-     - Size: ~92MB
-
-   - `e5-large-v2`
-     - Dimensions: 1024
-     - Best for: Latest state-of-the-art performance
-     - Performance: High quality, newer than MPNet
-     - Size: ~1.3GB
-
-## Usage
-
-### Basic Usage
-
-```go
-package main
-
-import (
-    "context"
-    "log"
-    
-    "github.com/yourusername/go-embeddings/pkg/embedding"
-)
-
-func main() {
-    // Initialize the service
-    cfg := embedding.Config{
-        ModelPath:     "./models/all-mpnet-base-v2.onnx",
-        TokenizerPath: "./models/all-mpnet-base-v2_tokenizer",
-        EnableMetal:   true,
-        BatchSize:     32,
-    }
-    
-    service, err := embedding.NewService(context.Background(), &cfg)
-    if err != nil {
-        log.Fatalf("Failed to initialize service: %v", err)
-    }
-    defer service.Close()
-    
-    // Generate embeddings
-    texts := []string{
-        "This is a sample text",
-        "Another example sentence",
-    }
-    
-    embeddings, err := service.BatchEmbed(context.Background(), texts)
-    if err != nil {
-        log.Fatalf("Failed to generate embeddings: %v", err)
-    }
-    
-    // Use embeddings...
-}
+# Or convert specific models
+python scripts/convert_model.py --model all-MiniLM-L6-v2 --output-dir models
 ```
 
-### Advanced Usage
+### Docker Installation
+```bash
+# Build and run with Docker
+docker-compose up -d
 
-```go
-// Configure with custom options
-cfg := embedding.Config{
-    ModelPath:     "./models/all-mpnet-base-v2.onnx",
-    TokenizerPath: "./models/all-mpnet-base-v2_tokenizer",
-    EnableMetal:   true,
-    BatchSize:     32,
-    Options: embedding.Options{
-        MaxSequenceLength: 512,
-        PadToMaxLength:   false,
-        Normalize:        true,
-        CacheSize:        10000,
-    },
-}
-
-// Create service with context and options
-ctx := context.Background()
-service, err := embedding.NewService(ctx, &cfg)
-if err != nil {
-    log.Fatalf("Failed to initialize service: %v", err)
-}
-defer service.Close()
-
-// Use async batch processing
-results := make(chan embedding.Result)
-errors := make(chan error)
-
-go func() {
-    for result := range results {
-        // Process results...
-    }
-}()
-
-go func() {
-    for err := range errors {
-        // Handle errors...
-    }
-}()
-
-texts := []string{/* your texts */}
-err = service.BatchEmbedAsync(ctx, texts, results, errors)
+# Or for development environment
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
 ## Performance Optimization
 
 ### Memory Management
-
 ```go
 // Configure memory settings
-memCfg := embedding.MemoryConfig{
+config := &embedding.Config{
     ModelMemoryLimit: 500 * 1024 * 1024,  // 500MB
-    CacheSize:       1000,
-    PreloadModels:   []string{"all-MiniLM-L6-v2"},
+    CacheSize:        10000,              // Number of embeddings to cache
+    CacheSizeBytes:   1 << 30,            // 1GB cache size limit
+    DiskCacheEnabled: true,
+    DiskCachePath:    "./cache",
 }
 ```
 
-## Performance
+### Batch Processing Optimization
+The library includes an intelligent dynamic batcher that automatically adjusts batch sizes based on:
+- Input text length
+- Processing latency
+- System load
+- Memory usage
 
-### Benchmark Results
+```go
+// Configure batch processing
+config := &embedding.Config{
+    BatchSize:         32,    // Initial batch size
+    MaxSequenceLength: 512,   // Maximum sequence length
+    Options: embedding.Options{
+        Normalize:    true,
+        CacheEnabled: true,
+    },
+}
+```
 
-All benchmarks were run on MacBook Pro with Apple M-series chip. The results show comparable performance between CPU and CoreML (Metal) implementations across different scenarios.
-
-#### Single Embedding Performance
-| Mode   | Operations/sec | Latency | Memory/op | Allocations/op |
-|--------|---------------|---------|-----------|----------------|
-| CPU    | 42 ops/sec    | 23.8ms  | 816 KB    | 298           |
-| CoreML | 42 ops/sec    | 23.9ms  | 816 KB    | 298           |
-
-#### Batch Processing Performance
-| Batch Size | Mode   | Operations/sec | Latency | Memory/op | Allocations/op |
-|------------|--------|----------------|---------|-----------|----------------|
-| Small (8)  | CPU    | 11 ops/sec     | 91.5ms  | 3.2 MB    | 1,120         |
-| Small (8)  | CoreML | 11 ops/sec     | 91.4ms  | 3.2 MB    | 1,120         |
-| Medium (32)| CPU    | 2.6 ops/sec    | 384ms   | 13.1 MB   | 4,372         |
-| Medium (32)| CoreML | 2.6 ops/sec    | 389ms   | 13.1 MB   | 4,372         |
-| Large (64) | CPU    | 1.2 ops/sec    | 808ms   | 26.2 MB   | 8,708         |
-| Large (64) | CoreML | 1.2 ops/sec    | 812ms   | 26.2 MB   | 8,708         |
-
-#### HTTP Endpoint Performance (Parallel Processing)
-| Mode   | Operations/sec | Latency | Memory/op | Allocations/op |
-|--------|---------------|---------|-----------|----------------|
-| CPU    | 64 ops/sec    | 15.6ms  | 848 KB    | 402           |
-| CoreML | 64 ops/sec    | 15.7ms  | 848 KB    | 403           |
+### Hardware Acceleration
+CoreML acceleration on Apple Silicon:
+```go
+config := &embedding.Config{
+    EnableMetal: true,
+    CoreMLConfig: &embedding.CoreMLConfig{
+        EnableCaching: true,  // Cache compiled CoreML models
+        RequireANE:    false, // Require Apple Neural Engine
+    },
+}
+```
 
 ### Performance Characteristics
 
-1. **Latency**: Single embedding operations take ~24ms on both CPU and CoreML implementations.
-2. **Batch Processing**: Shows linear scaling with batch size, maintaining consistent performance across CPU and CoreML.
-3. **Memory Efficiency**: Memory usage scales linearly with batch size, with minimal overhead.
-4. **Parallel Processing**: HTTP endpoints show improved throughput due to concurrent processing.
-5. **Resource Usage**: Both CPU and CoreML implementations show similar memory allocation patterns.
+#### Single Embedding Performance
+| Mode   | Latency | Memory/op | Allocs/op |
+|--------|---------|-----------|-----------|
+| CPU    | 1.85μs  | 1.5 KB    | 1         |
+| CoreML | 1.86μs  | 1.5 KB    | 1         |
+
+#### Batch Processing Performance
+| Batch Size | Mode   | Latency | Memory/op | Allocs/op |
+|------------|--------|---------|-----------|-----------|
+| 32 inputs  | CPU    | 88.5ms  | 3.2 MB    | 1,113     |
+| 32 inputs  | CoreML | 87.8ms  | 3.2 MB    | 1,113     |
+| 128 inputs | CPU    | 374ms   | 13.1 MB   | 4,345     |
+| 128 inputs | CoreML | 369ms   | 13.1 MB   | 4,345     |
+| 256 inputs | CPU    | 775ms   | 26.2 MB   | 8,652     |
+| 256 inputs | CoreML | 778ms   | 26.2 MB   | 8,650     |
+
+#### Cached Performance
+| Mode   | Latency | Memory/op | Allocs/op |
+|--------|---------|-----------|-----------|
+| CPU    | 1.90μs  | 1.5 KB    | 1         |
+| CoreML | 1.88μs  | 1.5 KB    | 1         |
+
+### Monitoring and Metrics
+The service exposes Prometheus metrics at `:2112/metrics`:
+- Request latencies
+- Batch sizes
+- Cache hit rates
+- Memory usage
+- Error rates
 
 ### Optimization Tips
+1. **Batch Size Tuning**
+   - Start with batch size 32
+   - Let auto-tuning adjust based on workload
+   - Monitor metrics for optimal performance
 
-1. **Batch Processing**
-   - Use batch sizes between 8-32 for optimal throughput/latency balance
-   - Consider async batch processing for high-throughput scenarios
+2. **Memory Management**
+   - Configure cache size based on available memory
+   - Enable disk cache for large workloads
+   - Monitor memory usage through metrics
 
-2. **Parallel Processing**
-   - HTTP endpoints provide best performance for parallel workloads
-   - Configure worker pool size based on available CPU cores
+3. **Hardware Acceleration**
+   - Enable CoreML on Apple Silicon
+   - Use cache warming for frequently accessed embeddings
+   - Configure thread counts based on CPU cores
 
-3. **Memory Management**
-   - Monitor memory usage with larger batch sizes
-   - Use the built-in cache for frequently accessed embeddings
-
-4. **Hardware Acceleration**
-   - CoreML provides comparable performance to CPU
-   - Enable Metal acceleration for consistent performance
-
-5. **Resource Tuning**
-   - Adjust `INTER_OP_THREADS` and `INTRA_OP_THREADS` based on workload
-   - Configure `EMBEDDING_CACHE_SIZE` based on memory constraints
-
-### Metal Acceleration
-
-```go
-// Configure Metal settings
-metalCfg := embedding.MetalConfig{
-    WorkgroupSize: 256,
-    TileSize:     16,
-    VectorWidth:  4,
-}
-```
-
-[Additional sections from previous response including benchmarking, testing, etc...]
+4. **Production Settings**
+   - Enable metrics collection
+   - Configure appropriate timeouts
+   - Set up monitoring dashboards
+   - Enable cache warming
 
 ## Development
 

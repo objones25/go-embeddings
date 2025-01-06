@@ -359,15 +359,43 @@ var ModelConfigs = map[string]ModelConfig{
 
 ## Testing
 
+### Requirements
+All tests must be run through the provided Makefile due to required environment setup and native library dependencies. The Makefile handles:
+- Dynamic library paths (ONNX Runtime, tokenizers)
+- Platform-specific build tags
+- Environment variables
+- Test data setup
+
+### Running Tests
+
 ```bash
-# Run all tests
-go test -v ./...
+# Run all tests (unit, integration, and benchmarks)
+make test
 
-# Run specific test suite
-go test -v ./pkg/embedding
+# Run specific test suites
+make test-unit          # Run unit tests only
+make test-integration   # Run integration tests only
+make test-benchmark     # Run performance benchmarks
+```
 
-# Run benchmarks
-go test -bench=. -benchmem ./...
+### Test Organization
+- `test/unit/`: Unit tests for individual components
+- `test/integration/`: Integration tests for the full service
+- `test/benchmark/`: Performance benchmarks
+- `testdata/`: Test models and tokenizer files
+
+### Common Issues
+1. **Running tests directly with `go test`** will fail due to missing environment setup. Always use the Makefile targets.
+
+2. **Missing test data**: If test data is missing, run:
+```bash
+make test-setup
+```
+
+3. **Library not found errors**: Ensure you've completed the installation steps:
+```bash
+make deps        # Install dependencies
+make test-setup  # Set up test data and libraries
 ```
 
 ## Benchmarking

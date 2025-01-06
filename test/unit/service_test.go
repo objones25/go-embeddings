@@ -635,3 +635,208 @@ func TestCoreMLPerformance(t *testing.T) {
 	// Assert that CoreML is faster (allowing for some variance)
 	assert.Less(t, coreMLAvg, cpuAvg*2, "CoreML should not be significantly slower than CPU")
 }
+
+// TestCacheEviction tests the size-based eviction in the cache
+func TestCacheEviction(t *testing.T) {
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+
+	// Create config with small cache size to test eviction
+	config := &embedding.Config{
+		ModelPath: modelPath,
+		Tokenizer: embedding.TokenizerConfig{
+			ModelID:        "sentence-transformers/all-MiniLM-L6-v2",
+			SequenceLength: 512,
+		},
+		Dimension:         384,
+		BatchSize:         32,
+		MaxSequenceLength: 512,
+		CacheSize:         2,    // Small cache size to force eviction
+		CacheSizeBytes:    8192, // Small memory limit
+		Options: embedding.Options{
+			PadToMaxLength: false,
+			Normalize:      true,
+			CacheEnabled:   true,
+		},
+	}
+
+	service, err := embedding.NewService(context.Background(), config)
+	require.NoError(t, err)
+	defer service.Close()
+
+	// Test texts
+	texts := []string{
+		"First text to cache",
+		"Second text to cache",
+		"Third text should evict first",
+		"Fourth text should evict second",
+	}
+
+	// First embedding - should be cached
+	embedding1, err := service.Embed(context.Background(), texts[0])
+	require.NoError(t, err)
+	require.NotNil(t, embedding1)
+
+	// Second embedding - should be cached
+	embedding2, err := service.Embed(context.Background(), texts[1])
+	require.NoError(t, err)
+	require.NotNil(t, embedding2)
+
+	// Third embedding - should evict first
+	embedding3, err := service.Embed(context.Background(), texts[2])
+	require.NoError(t, err)
+	require.NotNil(t, embedding3)
+
+	// Verify first text was evicted by getting it again
+	embedding1New, err := service.Embed(context.Background(), texts[0])
+	require.NoError(t, err)
+	require.NotNil(t, embedding1New)
+
+	// Compare the actual float32 slices
+	assert.Equal(t, len(embedding1), len(embedding1New), "Embedding lengths should match")
+	for i := range embedding1 {
+		assert.InDelta(t, embedding1[i], embedding1New[i], 1e-6, "Embedding values should match at index %d", i)
+	}
+
+	// Fourth embedding - should evict second
+	embedding4, err := service.Embed(context.Background(), texts[3])
+	require.NoError(t, err)
+	require.NotNil(t, embedding4)
+
+	// Verify second text was evicted
+	embedding2New, err := service.Embed(context.Background(), texts[1])
+	require.NoError(t, err)
+	require.NotNil(t, embedding2New)
+
+	// Compare the actual float32 slices
+	assert.Equal(t, len(embedding2), len(embedding2New), "Embedding lengths should match")
+	for i := range embedding2 {
+		assert.InDelta(t, embedding2[i], embedding2New[i], 1e-6, "Embedding values should match at index %d", i)
+	}
+}
+
+// TestDiskCache tests the disk caching functionality
+func TestDiskCache(t *testing.T) {
+	// Create temporary directory for disk cache
+	tempDir, err := os.MkdirTemp("", "embeddings-test-cache-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+
+	config := &embedding.Config{
+		ModelPath: modelPath,
+		Tokenizer: embedding.TokenizerConfig{
+			ModelID:        "sentence-transformers/all-MiniLM-L6-v2",
+			SequenceLength: 512,
+		},
+		Dimension:         384,
+		BatchSize:         32,
+		MaxSequenceLength: 512,
+		CacheSize:         1, // Small memory cache to force disk usage
+		CacheSizeBytes:    4096,
+		DiskCacheEnabled:  true,
+		DiskCachePath:     tempDir,
+		Options: embedding.Options{
+			PadToMaxLength: false,
+			Normalize:      true,
+			CacheEnabled:   true,
+		},
+	}
+
+	service, err := embedding.NewService(context.Background(), config)
+	require.NoError(t, err)
+	defer service.Close()
+
+	// Test text
+	text := "This is a test text for disk caching"
+
+	// First request - should compute and cache
+	embedding1, err := service.Embed(context.Background(), text)
+	require.NoError(t, err)
+	require.NotNil(t, embedding1)
+
+	// Force memory cache eviction with different text
+	_, err = service.Embed(context.Background(), "Eviction text")
+	require.NoError(t, err)
+
+	// Second request - should retrieve from disk
+	embedding2, err := service.Embed(context.Background(), text)
+	require.NoError(t, err)
+	require.NotNil(t, embedding2)
+
+	// Verify embeddings are the same
+	assert.Equal(t, embedding1, embedding2)
+
+	// Verify disk cache file exists
+	files, err := os.ReadDir(tempDir)
+	require.NoError(t, err)
+	assert.Greater(t, len(files), 0, "Expected cache files in directory")
+}
+
+// TestCacheWarming tests the cache warming functionality
+func TestCacheWarming(t *testing.T) {
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+
+	// Create temporary directory for disk cache
+	tempDir, err := os.MkdirTemp("", "embeddings-test-warming-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	config := &embedding.Config{
+		ModelPath: modelPath,
+		Tokenizer: embedding.TokenizerConfig{
+			ModelID:        "sentence-transformers/all-MiniLM-L6-v2",
+			SequenceLength: 512,
+		},
+		Dimension:         384,
+		BatchSize:         32,
+		MaxSequenceLength: 512,
+		CacheSize:         10,
+		CacheSizeBytes:    1 << 20, // 1MB
+		DiskCacheEnabled:  true,
+		DiskCachePath:     tempDir,
+		CacheWarming:      true,
+		WarmingInterval:   100 * time.Millisecond, // Short interval for testing
+		Options: embedding.Options{
+			PadToMaxLength: false,
+			Normalize:      true,
+			CacheEnabled:   true,
+		},
+	}
+
+	service, err := embedding.NewService(context.Background(), config)
+	require.NoError(t, err)
+	defer service.Close()
+
+	// Test text that we'll access frequently
+	text := "Frequently accessed text for warming"
+
+	// Access the text multiple times to increase its access count
+	for i := 0; i < 5; i++ {
+		embedding, err := service.Embed(context.Background(), text)
+		require.NoError(t, err)
+		require.NotNil(t, embedding)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Force eviction from memory cache with different texts
+	for i := 0; i < 10; i++ {
+		_, err := service.Embed(context.Background(), fmt.Sprintf("Eviction text %d", i))
+		require.NoError(t, err)
+	}
+
+	// Wait for cache warming to occur
+	time.Sleep(200 * time.Millisecond)
+
+	// The frequently accessed text should be back in memory cache
+	start := time.Now()
+	embedding, err := service.Embed(context.Background(), text)
+	require.NoError(t, err)
+	require.NotNil(t, embedding)
+
+	// Verify it was served from memory cache (should be very fast)
+	assert.Less(t, time.Since(start), 5*time.Millisecond, "Request took too long, might not be served from memory cache")
+}

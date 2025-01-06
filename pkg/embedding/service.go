@@ -189,7 +189,23 @@ func NewServiceWithLogger(ctx context.Context, config *Config, logger *zap.Logge
 	// Initialize cache if enabled
 	var cache *Cache
 	if config.Options.CacheEnabled {
-		cache = NewCache(config.CacheSize)
+		if config.CacheSize <= 0 {
+			config.CacheSize = 10000 // Default to 10k items if not specified
+		}
+		cacheOpts := CacheOptions{
+			Capacity:       config.CacheSize,
+			MaxSizeBytes:   config.CacheSizeBytes,
+			DiskEnabled:    config.DiskCacheEnabled,
+			CachePath:      config.DiskCachePath,
+			WarmerEnabled:  config.CacheWarming,
+			WarmerInterval: config.WarmingInterval,
+		}
+		var err error
+		cache, err = NewCache(cacheOpts)
+		if err != nil {
+			session.Destroy()
+			return nil, fmt.Errorf("failed to initialize cache: %v", err)
+		}
 	}
 
 	// Create worker pool

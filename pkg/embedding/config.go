@@ -30,7 +30,12 @@ type Config struct {
 
 	// Memory management
 	ModelMemoryLimit int64
-	CacheSize        int
+	CacheSize        int           // Maximum number of items in cache
+	CacheSizeBytes   int64         // Maximum size of cache in bytes
+	DiskCacheEnabled bool          // Enable disk cache
+	DiskCachePath    string        // Path to disk cache directory
+	CacheWarming     bool          // Enable cache warming
+	WarmingInterval  time.Duration // Interval for cache warming
 	PreloadModels    []string
 
 	// Service settings
@@ -121,6 +126,11 @@ func LoadConfig() (*Config, error) {
 		IntraOpThreads:    getEnvInt("INTRA_OP_THREADS", 1),
 		ModelMemoryLimit:  getEnvInt64("MODEL_MEMORY_LIMIT", 500*1024*1024), // 500MB default
 		CacheSize:         getEnvInt("EMBEDDING_CACHE_SIZE", 10000),
+		CacheSizeBytes:    getEnvInt64("EMBEDDING_CACHE_SIZE_BYTES", 1<<30), // 1GB default
+		DiskCacheEnabled:  getEnvBool("ENABLE_DISK_CACHE", false),
+		DiskCachePath:     os.Getenv("DISK_CACHE_PATH"),
+		CacheWarming:      getEnvBool("ENABLE_CACHE_WARMING", true),
+		WarmingInterval:   getEnvDuration("CACHE_WARMING_INTERVAL", 5*time.Minute),
 		RequestTimeout:    getEnvDuration("REQUEST_TIMEOUT", 30*time.Second),
 		Options: Options{
 			PadToMaxLength: getEnvBool("PAD_TO_MAX_LENGTH", false),

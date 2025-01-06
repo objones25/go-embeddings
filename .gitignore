@@ -1,0 +1,119 @@
+# Binaries and build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+vendor/
+
+# Go specific
+coverage.out
+coverage.html
+*.prof
+*.trace
+*.test
+*.bench
+/bin/
+/dist/
+
+# Model files and artifacts
+/models/
+.cache/
+*.onnx
+*.bin
+*.pt
+*.safetensors
+*.h5
+/tokenizer/
+/embeddings/
+/checkpoints/
+
+# Runtime and temporary files
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+
+# Dependencies
+/vendor/
+/go.work
+/go.work.sum
+
+# Environment and configuration
+.env
+.env.*
+!.env.example
+*.local
+config.local.yaml
+config.dev.yaml
+venv/
+env/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+.project
+.settings/
+.classpath
+*.iml
+*.iws
+.DS_Store
+Thumbs.db
+
+# Logs and databases
+*.log
+logs/
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+
+# Debug and profiling
+*.cpu
+*.mem
+*.pprof
+debug/
+/profile/
+
+# Test artifacts and data
+/coverage/
+/test-results/
+/testdata/
+*.tgz
+*.tar.gz
+
+# Documentation artifacts
+/docs/_build/
+/site/
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+/libs/
+onnxruntime*/
+onnxruntime*.tgz
+onnxruntime*.tar.gz
+onnxruntime-osx-arm64-1.20.0.tgz
+/onnxruntime-*/
+*.dylib
+/embeddings.db*
+/cache/
+notes.txt
+TODO.md

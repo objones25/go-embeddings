@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Build outputs
+build/
+dist/
+*.out
+
+# Dependencies
+vendor/
+libs/
+onnxruntime-osx-arm64-1.20.0/
+onnxruntime-osx-arm64-1.20.0.tgz
+
+# Model files and cache
+models/
+.cache/
+*.onnx
+*.bin
+*.safetensors
+
+# Test data
+testdata/
+test/benchmark/data/
+
+# System files
+.DS_Store
+*.log
+~

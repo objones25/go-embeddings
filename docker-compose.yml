@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  embeddings:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
+    ports:
+      - "8080:8080"  # API port
+      - "2112:2112"  # Metrics port
+    volumes:
+      - ./models:/app/models
+      - ./.cache:/app/.cache
+    environment:
+      - ENABLE_METAL=${ENABLE_METAL:-true}
+      - METAL_DEVICE_ID=${METAL_DEVICE_ID:-0}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - MAX_BATCH_SIZE=${MAX_BATCH_SIZE:-64}
+      - EMBEDDING_CACHE_SIZE=${EMBEDDING_CACHE_SIZE:-10000}
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  model-converter:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    volumes:
+      - ./models:/app/models
+      - ./.cache:/app/.cache
+      - ./scripts:/app/scripts
+    environment:
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
+    command: ["python", "/app/scripts/convert_model.py", "--output-dir", "/app/models"]
+    profiles:
+      - tools
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./configs/prometheus:/etc/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    volumes:
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+
+volumes:
+  models:
+  cache:

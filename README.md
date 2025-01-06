@@ -330,4 +330,90 @@ BenchmarkBatchEmbedMetal32-8        200            6789012 ns/op          5678 B
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+### Configuration
+
+Create a `.env` file in your project root with the following options (showing default values):
+
+```env
+# Model Settings
+MODEL_PATH=models/all-MiniLM-L6-v2
+MAX_SEQUENCE_LENGTH=512
+MODEL_MEMORY_LIMIT=524288000  # 500MB
+
+# Batch Processing
+BATCH_SIZE=32
+INTER_OP_THREADS=1
+INTRA_OP_THREADS=1
+
+# Cache Configuration
+CACHE_SIZE=10000
+CACHE_SIZE_BYTES=1073741824  # 1GB
+ENABLE_CACHE=true
+ENABLE_DISK_CACHE=true
+DISK_CACHE_PATH=./cache
+ENABLE_CACHE_WARMING=true
+CACHE_WARMING_INTERVAL=5m
+
+# Hardware Acceleration (MacOS)
+ENABLE_METAL=true
+ENABLE_COREML_CACHE=true
+REQUIRE_ANE=false
+
+# Server Settings
+PORT=8080
+METRICS_PORT=2112
+READ_TIMEOUT=30s
+WRITE_TIMEOUT=30s
+REQUEST_TIMEOUT=30s
+MAX_REQUEST_SIZE=5242880  # 5MB
+
+# Embedding Options
+PAD_TO_MAX_LENGTH=false
+NORMALIZE_EMBEDDINGS=true
+
+# Optional: Tokenizer Settings (if using HuggingFace models)
+TOKENIZER_MODEL_ID=sentence-transformers/all-MiniLM-L6-v2
+TOKENIZER_PATH=
+HF_AUTH_TOKEN=
+TOKENIZER_CACHE_DIR=
+```
+
+#### Configuration Details
+
+##### Model Settings
+- `MODEL_PATH`: Path to the ONNX model file
+- `MAX_SEQUENCE_LENGTH`: Maximum input sequence length
+- `MODEL_MEMORY_LIMIT`: Maximum memory allocated for model
+
+##### Batch Processing
+- `BATCH_SIZE`: Number of inputs to process together
+- `INTER_OP_THREADS`: Number of threads for parallel node execution
+- `INTRA_OP_THREADS`: Number of threads for internal node parallelism
+
+##### Cache Configuration
+- `CACHE_SIZE`: Maximum number of embeddings to cache
+- `CACHE_SIZE_BYTES`: Maximum cache size in bytes
+- `ENABLE_CACHE`: Enable in-memory caching
+- `ENABLE_DISK_CACHE`: Enable persistent disk caching
+- `DISK_CACHE_PATH`: Directory for disk cache
+- `ENABLE_CACHE_WARMING`: Pre-warm cache on startup
+- `CACHE_WARMING_INTERVAL`: Interval between cache warming cycles
+
+##### Hardware Acceleration
+- `ENABLE_METAL`: Enable CoreML acceleration on MacOS
+- `ENABLE_COREML_CACHE`: Cache compiled CoreML models
+- `REQUIRE_ANE`: Require Apple Neural Engine (M-series chips)
+
+##### Server Settings
+- `PORT`: HTTP server port
+- `METRICS_PORT`: Prometheus metrics port
+- `READ_TIMEOUT`: Maximum duration for reading requests
+- `WRITE_TIMEOUT`: Maximum duration for writing responses
+- `REQUEST_TIMEOUT`: Maximum duration for processing requests
+- `MAX_REQUEST_SIZE`: Maximum request body size
+
+##### Embedding Options
+- `PAD_TO_MAX_LENGTH`: Pad all sequences to max length
+- `NORMALIZE_EMBEDDINGS`: L2 normalize embeddings
 ```

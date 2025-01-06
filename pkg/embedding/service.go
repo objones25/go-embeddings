@@ -35,6 +35,15 @@ type Service interface {
 
 	// Close releases all resources
 	Close() error
+
+	// GetCacheMetrics returns the current cache hit/miss statistics
+	GetCacheMetrics() CacheMetrics
+
+	// InvalidateCache clears both memory and disk caches
+	InvalidateCache()
+
+	// GetCacheSize returns the current size of the cache in bytes
+	GetCacheSize() int64
 }
 
 // service implements the Service interface
@@ -529,4 +538,33 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// CacheMetrics holds statistics about cache usage
+type CacheMetrics struct {
+	Hits   int64
+	Misses int64
+}
+
+// GetCacheMetrics returns the current cache hit/miss statistics
+func (s *service) GetCacheMetrics() CacheMetrics {
+	if s.cache == nil {
+		return CacheMetrics{}
+	}
+	return s.cache.GetMetrics()
+}
+
+// InvalidateCache clears both memory and disk caches
+func (s *service) InvalidateCache() {
+	if s.cache != nil {
+		s.cache.Clear()
+	}
+}
+
+// GetCacheSize returns the current size of the cache in bytes
+func (s *service) GetCacheSize() int64 {
+	if s.cache == nil {
+		return 0
+	}
+	return s.cache.Size()
 }

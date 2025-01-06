@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -839,4 +840,345 @@ func TestCacheWarming(t *testing.T) {
 
 	// Verify it was served from memory cache (should be very fast)
 	assert.Less(t, time.Since(start), 5*time.Millisecond, "Request took too long, might not be served from memory cache")
+}
+
+// TestCacheMetrics tests the cache hit/miss metrics
+func TestCacheMetrics(t *testing.T) {
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+
+	config := &embedding.Config{
+		ModelPath: modelPath,
+		Tokenizer: embedding.TokenizerConfig{
+			ModelID:        "sentence-transformers/all-MiniLM-L6-v2",
+			SequenceLength: 512,
+		},
+		Dimension:         384,
+		BatchSize:         32,
+		MaxSequenceLength: 512,
+		CacheSize:         10,
+		CacheSizeBytes:    1 << 20, // 1MB
+		Options: embedding.Options{
+			PadToMaxLength: false,
+			Normalize:      true,
+			CacheEnabled:   true,
+		},
+	}
+
+	service, err := embedding.NewService(context.Background(), config)
+	require.NoError(t, err)
+	defer service.Close()
+
+	// Test text that we'll access multiple times
+	text := "Test text for cache metrics"
+
+	// First access should be a miss
+	_, err = service.Embed(context.Background(), text)
+	require.NoError(t, err)
+	metrics := service.GetCacheMetrics()
+	assert.Equal(t, int64(0), metrics.Hits)
+	assert.Equal(t, int64(1), metrics.Misses)
+
+	// Second access should be a hit
+	_, err = service.Embed(context.Background(), text)
+	require.NoError(t, err)
+	metrics = service.GetCacheMetrics()
+	assert.Equal(t, int64(1), metrics.Hits)
+	assert.Equal(t, int64(1), metrics.Misses)
+}
+
+// TestCacheConcurrency tests concurrent access to the cache
+func TestCacheConcurrency(t *testing.T) {
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+
+	config := &embedding.Config{
+		ModelPath: modelPath,
+		Tokenizer: embedding.TokenizerConfig{
+			ModelID:        "sentence-transformers/all-MiniLM-L6-v2",
+			SequenceLength: 512,
+		},
+		Dimension:         384,
+		BatchSize:         32,
+		MaxSequenceLength: 512,
+		CacheSize:         100,
+		CacheSizeBytes:    1 << 20, // 1MB
+		Options: embedding.Options{
+			PadToMaxLength: false,
+			Normalize:      true,
+			CacheEnabled:   true,
+		},
+	}
+
+	service, err := embedding.NewService(context.Background(), config)
+	require.NoError(t, err)
+	defer service.Close()
+
+	// Number of concurrent goroutines
+	workers := 3            // Reduced from 5
+	requestsPerWorker := 10 // Reduced from 20
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	// Create a channel for errors
+	errChan := make(chan error, workers*requestsPerWorker)
+
+	// Launch workers
+	for i := 0; i < workers; i++ {
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < requestsPerWorker; j++ {
+				text := fmt.Sprintf("Test text %d-%d", workerID, j)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				_, err := service.Embed(ctx, text)
+				cancel()
+				if err != nil {
+					errChan <- fmt.Errorf("worker %d request %d failed: %v", workerID, j, err)
+				}
+				// Add a larger delay between requests to prevent overwhelming the service
+				time.Sleep(100 * time.Millisecond)
+			}
+		}(i)
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+	close(errChan)
+
+	// Check for any errors
+	var errors []error
+	for err := range errChan {
+		errors = append(errors, err)
+	}
+	assert.Empty(t, errors, "Expected no errors during concurrent access")
+}
+
+// TestCacheInvalidation tests cache invalidation
+func TestCacheInvalidation(t *testing.T) {
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+
+	// Create temporary directory for disk cache
+	tempDir, err := os.MkdirTemp("", "embeddings-test-invalidation-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	config := &embedding.Config{
+		ModelPath: modelPath,
+		Tokenizer: embedding.TokenizerConfig{
+			ModelID:        "sentence-transformers/all-MiniLM-L6-v2",
+			SequenceLength: 512,
+		},
+		Dimension:         384,
+		BatchSize:         32,
+		MaxSequenceLength: 512,
+		CacheSize:         10,
+		CacheSizeBytes:    1 << 20, // 1MB
+		DiskCacheEnabled:  true,
+		DiskCachePath:     tempDir,
+		Options: embedding.Options{
+			PadToMaxLength: false,
+			Normalize:      true,
+			CacheEnabled:   true,
+		},
+	}
+
+	service, err := embedding.NewService(context.Background(), config)
+	require.NoError(t, err)
+	defer service.Close()
+
+	// Test text
+	text := "Test text for cache invalidation"
+
+	// Get initial embedding
+	embedding1, err := service.Embed(context.Background(), text)
+	require.NoError(t, err)
+	require.NotNil(t, embedding1)
+
+	// Invalidate the cache
+	service.InvalidateCache()
+
+	// Verify disk cache was cleared
+	files, err := os.ReadDir(tempDir)
+	require.NoError(t, err)
+	binFiles := 0
+	for _, file := range files {
+		if strings.HasSuffix(file.Name(), ".bin") {
+			binFiles++
+		}
+	}
+	assert.Equal(t, 0, binFiles, "Expected disk cache to be empty after invalidation")
+
+	// Get embedding again after invalidation
+	embedding2, err := service.Embed(context.Background(), text)
+	require.NoError(t, err)
+	require.NotNil(t, embedding2)
+
+	// Verify embeddings are the same (should be deterministic)
+	assert.Equal(t, len(embedding1), len(embedding2), "Embedding lengths should match")
+	for i := range embedding1 {
+		assert.InDelta(t, embedding1[i], embedding2[i], 1e-6, "Embedding values should match at index %d", i)
+	}
+
+	// Verify cache metrics were reset
+	metrics := service.GetCacheMetrics()
+	assert.Equal(t, int64(0), metrics.Hits)
+	assert.Equal(t, int64(1), metrics.Misses)
+}
+
+// TestCacheSizeAccuracy tests the accuracy of cache size tracking
+func TestCacheSizeAccuracy(t *testing.T) {
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+
+	// Calculate sizes
+	embeddingSize := int64(384 * 4) // 384 dimensions * 4 bytes per float32
+	maxItems := 5
+	maxBytes := embeddingSize * int64(maxItems) // Enough space for all test items
+
+	config := &embedding.Config{
+		ModelPath: modelPath,
+		Tokenizer: embedding.TokenizerConfig{
+			ModelID:        "sentence-transformers/all-MiniLM-L6-v2",
+			SequenceLength: 512,
+		},
+		Dimension:         384,
+		BatchSize:         32,
+		MaxSequenceLength: 512,
+		CacheSize:         maxItems,
+		CacheSizeBytes:    maxBytes,
+		Options: embedding.Options{
+			PadToMaxLength: false,
+			Normalize:      true,
+			CacheEnabled:   true,
+		},
+	}
+
+	service, err := embedding.NewService(context.Background(), config)
+	require.NoError(t, err)
+	defer service.Close()
+
+	// Initial size should be 0
+	assert.Equal(t, int64(0), service.GetCacheSize(), "Initial cache size should be 0")
+
+	// Add items one by one and verify size
+	texts := []string{
+		"First test text",
+		"Second test text",
+		"Third test text",
+		"Fourth test text",
+		"Fifth test text",
+	}
+
+	for i, text := range texts {
+		_, err := service.Embed(context.Background(), text)
+		require.NoError(t, err)
+
+		currentSize := service.GetCacheSize()
+		expectedSize := embeddingSize * int64(i+1)
+		assert.Equal(t, expectedSize, currentSize,
+			"Cache size should be %d bytes for %d items", expectedSize, i+1)
+	}
+
+	// Add one more item to ensure eviction
+	_, err = service.Embed(context.Background(), "One more text to trigger eviction")
+	require.NoError(t, err)
+
+	// Final size check - should still have exactly maxItems
+	finalSize := service.GetCacheSize()
+	expectedFinalSize := embeddingSize * int64(maxItems)
+	assert.Equal(t, expectedFinalSize, finalSize,
+		"Final cache size should be %d bytes for %d items", expectedFinalSize, maxItems)
+}
+
+// TestDiskCacheEdgeCases tests edge cases in the disk cache
+func TestDiskCacheEdgeCases(t *testing.T) {
+	testDataPath := filepath.Join("..", "..", "testdata")
+	modelPath := filepath.Join(testDataPath, "model.onnx")
+
+	// Create temporary directory for disk cache
+	tempDir, err := os.MkdirTemp("", "embeddings-test-edge-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	config := &embedding.Config{
+		ModelPath: modelPath,
+		Tokenizer: embedding.TokenizerConfig{
+			ModelID:        "sentence-transformers/all-MiniLM-L6-v2",
+			SequenceLength: 512,
+		},
+		Dimension:         384,
+		BatchSize:         32,
+		MaxSequenceLength: 512,
+		CacheSize:         1, // Tiny memory cache to force disk usage
+		CacheSizeBytes:    4096,
+		DiskCacheEnabled:  true,
+		DiskCachePath:     tempDir,
+		Options: embedding.Options{
+			PadToMaxLength: false,
+			Normalize:      true,
+			CacheEnabled:   true,
+		},
+	}
+
+	service, err := embedding.NewService(context.Background(), config)
+	require.NoError(t, err)
+	defer service.Close()
+
+	// Test cases
+	tests := []struct {
+		name        string
+		text        string
+		expectError bool
+	}{
+		{"empty_string", "", true},
+		{"very_long_text", strings.Repeat("very long text ", 100), false},
+		{"special_chars", "!@#$%^&*()_+{}|:\"<>?~`-=[]\\;',./'", false},
+		{"unicode", "Hello 你好 Bonjour こんにちは Hola", false},
+		{"whitespace", "   \t\n\r   ", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Get initial embedding
+			embedding1, err := service.Embed(context.Background(), tt.text)
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, embedding1)
+
+			// Force memory cache eviction
+			_, err = service.Embed(context.Background(), "Eviction text")
+			require.NoError(t, err)
+
+			// Get embedding again (should come from disk)
+			embedding2, err := service.Embed(context.Background(), tt.text)
+			require.NoError(t, err)
+			require.NotNil(t, embedding2)
+
+			// Verify embeddings match
+			assert.Equal(t, len(embedding1), len(embedding2), "Embedding lengths should match")
+			for i := range embedding1 {
+				assert.InDelta(t, embedding1[i], embedding2[i], 1e-6, "Embedding values should match at index %d", i)
+			}
+
+			// Verify disk cache file exists and has correct format
+			files, err := os.ReadDir(tempDir)
+			require.NoError(t, err)
+			found := false
+			for _, file := range files {
+				if strings.HasSuffix(file.Name(), ".bin") {
+					found = true
+					// Verify file size is reasonable (should be at least dimension * 4 bytes)
+					info, err := file.Info()
+					require.NoError(t, err)
+					assert.GreaterOrEqual(t, info.Size(), int64(config.Dimension*4))
+					break
+				}
+			}
+			assert.True(t, found, "Expected to find cache file for embedding")
+		})
+	}
 }

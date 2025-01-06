@@ -34,6 +34,10 @@ type Cache struct {
 	warmerInterval time.Duration
 	warmerCtx      context.Context
 	warmerCancel   context.CancelFunc
+
+	// Cache metrics
+	hits   atomic.Int64
+	misses atomic.Int64
 }
 
 // cacheItem represents a single item in the cache
@@ -109,6 +113,7 @@ func (c *Cache) Get(key string) ([]float32, bool) {
 
 	// Try memory cache first
 	if embedding, found := c.getFromMemory(key); found {
+		c.hits.Add(1)
 		return embedding, true
 	}
 
@@ -117,10 +122,12 @@ func (c *Cache) Get(key string) ([]float32, bool) {
 		if embedding, found := c.getFromDisk(key); found {
 			// Promote to memory cache
 			c.Set(key, embedding)
+			c.hits.Add(1)
 			return embedding, true
 		}
 	}
 
+	c.misses.Add(1)
 	return nil, false
 }
 
@@ -410,24 +417,23 @@ func (c *Cache) Remove(key string) error {
 func (c *Cache) Clear() error {
 	c.mu.Lock()
 	c.items = make(map[string]*list.Element)
-	c.lru.Init()
+	c.lru = list.New()
 	c.currentSize.Store(0)
+	c.hits.Store(0)
+	c.misses.Store(0)
 	c.mu.Unlock()
 
-	if c.diskEnabled {
+	// Clear disk cache if enabled
+	if c.diskEnabled && c.diskCachePath != "" {
 		c.diskMu.Lock()
 		defer c.diskMu.Unlock()
 
-		// Remove all files in cache directory
-		dir, err := os.ReadDir(c.diskCachePath)
-		if err != nil {
-			return fmt.Errorf("failed to read cache directory: %v", err)
+		// Remove the entire cache directory and recreate it
+		if err := os.RemoveAll(c.diskCachePath); err != nil {
+			return fmt.Errorf("failed to remove cache directory: %v", err)
 		}
-
-		for _, entry := range dir {
-			if err := os.Remove(filepath.Join(c.diskCachePath, entry.Name())); err != nil {
-				return fmt.Errorf("failed to remove cache file: %v", err)
-			}
+		if err := os.MkdirAll(c.diskCachePath, 0755); err != nil {
+			return fmt.Errorf("failed to recreate cache directory: %v", err)
 		}
 	}
 
@@ -473,4 +479,12 @@ func (c *Cache) removeElement(element *list.Element) {
 	item := element.Value.(*cacheItem)
 	delete(c.items, item.key)
 	c.currentSize.Add(-item.sizeBytes)
+}
+
+// GetMetrics returns the current cache hit/miss statistics
+func (c *Cache) GetMetrics() CacheMetrics {
+	return CacheMetrics{
+		Hits:   c.hits.Load(),
+		Misses: c.misses.Load(),
+	}
 }

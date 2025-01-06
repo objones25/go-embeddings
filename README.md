@@ -1,7 +1,3 @@
-I'll create a complete, standalone README for the go-embeddings library. Let me first structure this properly.
-
-
-
 ```markdown
 # Go Embeddings Library
 

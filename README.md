@@ -1,4 +1,3 @@
-```markdown
 # Go Embeddings Library
 
 A high-performance, production-ready embedding service for Go, supporting multiple transformer models with MacOS Metal acceleration.
@@ -120,6 +119,208 @@ docker-compose up -d
 
 # Or for development environment
 docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+
+## Example Usage
+
+### Using as a Library
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/objones25/go-embeddings/pkg/embedding"
+)
+
+func main() {
+    // Initialize configuration
+    config := &embedding.Config{
+        ModelPath:         "./models/all-MiniLM-L6-v2",
+        MaxSequenceLength: 512,
+        Dimension:        384,  // 384 for MiniLM-L6, 768 for MPNet
+        BatchSize:        32,
+        EnableMetal:      true,  // Enable CoreML on MacOS
+        CoreMLConfig: &embedding.CoreMLConfig{
+            EnableCaching: true,
+            RequireANE:    false,
+        },
+        Options: embedding.Options{
+            CacheEnabled:   true,
+            Normalize:      true,
+            PadToMaxLength: false,
+        },
+    }
+
+    // Create service with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    service, err := embedding.NewService(ctx, config)
+    if err != nil {
+        log.Fatalf("Failed to create service: %v", err)
+    }
+    defer service.Close()
+
+    // Single text embedding
+    text := "Hello, world!"
+    vector, err := service.Embed(ctx, text)
+    if err != nil {
+        log.Fatalf("Failed to generate embedding: %v", err)
+    }
+    fmt.Printf("Single embedding (len=%d): %v\n", len(vector), vector[:5])
+
+    // Batch embedding
+    texts := []string{
+        "The quick brown fox jumps over the lazy dog",
+        "Machine learning is fascinating",
+        "Go is a great programming language",
+    }
+    vectors, err := service.BatchEmbed(ctx, texts)
+    if err != nil {
+        log.Fatalf("Failed to generate batch embeddings: %v", err)
+    }
+    fmt.Printf("Generated %d embeddings\n", len(vectors))
+}
+
+### Using as a Server
+
+Start the server:
+```bash
+go run cmd/embedserver/main.go
+```
+
+Generate embeddings via HTTP:
+```bash
+# Single embedding
+curl -X POST http://localhost:8080/api/v1/embed \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello, world!"}'
+
+# Batch embeddings
+curl -X POST http://localhost:8080/api/v1/embed/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "texts": [
+      "First text to embed",
+      "Second text to embed"
+    ]
+  }'
+```
+
+### Advanced Features
+
+#### Async Batch Processing
+```go
+// Initialize service as shown above
+results := make(chan embedding.Result)
+errors := make(chan error)
+
+err := service.BatchEmbedAsync(ctx, texts, results, errors)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Process results as they arrive
+for i := 0; i < len(texts); i++ {
+    select {
+    case result := <-results:
+        fmt.Printf("Embedding: %v\n", result.Embedding[:5])
+    case err := <-errors:
+        fmt.Printf("Error: %v\n", err)
+    case <-ctx.Done():
+        fmt.Println("Operation timed out")
+        return
+    }
+}
+```
+
+#### Document Chunking
+```go
+// Initialize tokenizer
+tokConfig := embedding.TokenizerConfig{
+    ModelID:        "all-MiniLM-L6-v2",
+    SequenceLength: 512,
+}
+tokenizer, _ := embedding.NewTokenizer(tokConfig)
+
+// Configure chunking
+opts := embedding.DefaultChunkingOptions()
+opts.Strategy = embedding.ChunkByParagraph
+opts.MaxTokens = 256
+
+// Chunk long document
+longText := `First paragraph with content.
+
+Second paragraph with different content.
+This is still part of the second paragraph.
+
+Third paragraph here.`
+
+chunks, err := tokenizer.ChunkDocument(longText, opts)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Document split into %d chunks\n", len(chunks))
+```
+
+#### Cache Management
+```go
+// Initialize service with caching
+config := &embedding.Config{
+    Options: embedding.Options{
+        CacheEnabled: true,
+    },
+    CacheSize:        10000,  // Cache up to 10k embeddings
+    CacheSizeBytes:   1 << 30,  // Use up to 1GB memory
+    DiskCacheEnabled: true,
+    DiskCachePath:    "./cache",
+}
+
+service, _ := embedding.NewService(context.Background(), config)
+
+// Get cache statistics
+metrics := service.GetCacheMetrics()
+fmt.Printf("Cache hits: %d, misses: %d\n", metrics.Hits, metrics.Misses)
+
+// Get current cache size
+size := service.GetCacheSize()
+fmt.Printf("Current cache size: %d bytes\n", size)
+
+// Clear cache if needed
+service.InvalidateCache()
+```
+
+### Configuration
+
+Create a `.env` file to configure the service:
+```env
+# Model Settings
+MODEL_PATH=./models/all-MiniLM-L6-v2
+MAX_SEQUENCE_LENGTH=512
+BATCH_SIZE=32
+
+# Hardware Acceleration
+ENABLE_METAL=true
+ENABLE_COREML_CACHE=true
+REQUIRE_ANE=false
+
+# Cache Configuration
+ENABLE_CACHE=true
+CACHE_SIZE=10000
+CACHE_SIZE_BYTES=1073741824
+ENABLE_DISK_CACHE=true
+DISK_CACHE_PATH=./cache
+
+# Server Settings
+PORT=8080
+METRICS_PORT=2112
+REQUEST_TIMEOUT=30s
 ```
 
 ## Performance Optimization
